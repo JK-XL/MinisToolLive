@@ -1,0 +1,12 @@
+#!/bin/sh
+# prerm —— 卸载前清理偏好键，保证零残留
+set -e
+
+PREFS=/var/mobile/Library/Preferences/com.openminis.app.plist
+if [ -f "$PREFS" ]; then
+    /var/jb/usr/bin/plutil -remove mtl_enabled "$PREFS" 2>/dev/null || true
+    /var/jb/usr/bin/plutil -remove mtl_frame   "$PREFS" 2>/dev/null || true
+    /var/jb/usr/bin/plutil -remove mtl_lock    "$PREFS" 2>/dev/null || true
+fi
+
+exit 0

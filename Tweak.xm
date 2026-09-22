@@ -12,9 +12,13 @@
 #import <UIKit/UIKit.h>
 #import "MinisLiveOverlay.h"
 
-// ── 权威 block 类型（照抄 ISHShellExecutor.h）──────────────
+// ── 权威类型（照抄 ISHShellExecutor.h）─────────────────────
+// 前置声明结果类，保持签名与真实一致（ABI 相同，仅需 NSObject 基类）
+@interface ISHShellExecutionResult : NSObject
+@end
+
 typedef void (^ISHShellLineCallback)(NSString *line, BOOL isStdErr);
-typedef void (^MTLResultCallback)(id result);   // 用 id 避免依赖 ISHShellExecutionResult 头文件
+typedef void (^ISHShellCompletionCallback)(ISHShellExecutionResult *result);
 
 #pragma mark - 统一的包装逻辑
 
@@ -36,7 +40,7 @@ static ISHShellLineCallback MTLWrapLine(ISHShellLineCallback original) {
 /// 注意：浮层收尾必须 dispatch_async 到下一轮 runloop —— completion 本身
 /// 就在主队列上被调用，若同步收尾会与 Minis 正在进行的 SwiftUI 视图更新
 /// 撞在同一轮事务里（0x8BADF00D / 视图更新期改状态）。隔一轮是零风险的。
-static MTLResultCallback MTLWrapDone(MTLResultCallback original) {
+static ISHShellCompletionCallback MTLWrapDone(ISHShellCompletionCallback original) {
     return ^(id result) {
         if (original) {
             original(result);                            // ← 原逻辑，零改动
@@ -77,7 +81,7 @@ static void MTLBegin(NSString *exe, NSArray *args) {
 // ① /bin/sh -c "<command>"（AIChatViewModel+ISHCommand 走的这条）
 + (int)executeCommand:(NSString *)command
          lineCallback:(ISHShellLineCallback)lineCallback
-           completion:(MTLResultCallback)completion {
+           completion:(ISHShellCompletionCallback)completion {
 
     MTLBegin(@"/bin/sh", @[@"-c", command ?: @""]);
     return %orig(command, MTLWrapLine(lineCallback), MTLWrapDone(completion));
@@ -88,7 +92,7 @@ static void MTLBegin(NSString *exe, NSArray *args) {
                arguments:(NSArray *)arguments
              environment:(NSDictionary *)environment
             lineCallback:(ISHShellLineCallback)lineCallback
-              completion:(MTLResultCallback)completion {
+              completion:(ISHShellCompletionCallback)completion {
 
     MTLBegin(executable, arguments);
     return %orig(executable, arguments, environment,
@@ -101,7 +105,7 @@ static void MTLBegin(NSString *exe, NSArray *args) {
              environment:(NSDictionary *)environment
                stdinData:(NSData *)stdinData
             lineCallback:(ISHShellLineCallback)lineCallback
-              completion:(MTLResultCallback)completion {
+              completion:(ISHShellCompletionCallback)completion {
 
     MTLBegin(executable, arguments);
     return %orig(executable, arguments, environment, stdinData,
@@ -116,7 +120,7 @@ static void MTLBegin(NSString *exe, NSArray *args) {
                stdinData:(NSData *)stdinData
                fsContext:(uint64_t)fsContext
             lineCallback:(ISHShellLineCallback)lineCallback
-              completion:(MTLResultCallback)completion {
+              completion:(ISHShellCompletionCallback)completion {
 
     MTLBegin(executable, arguments);
     return %orig(executable, arguments, environment, stdinData, fsContext,

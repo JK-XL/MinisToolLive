@@ -1,0 +1,22 @@
+#!/bin/sh
+# postinst —— 装完提示（不强制 respring，由用户决定）
+set -e
+
+if [ -f /var/jb/usr/bin/roothidepatch ]; then
+    roothidepatch 2>/dev/null || true
+fi
+
+echo ""
+echo "════════════════════════════════════════════"
+echo "  Minis Tool Live 已安装"
+echo "  Minis 实时工具输出浮层"
+echo ""
+echo "  ⚠️  需要注销(respring)后才会生效"
+echo "      因为 Minis 正在运行，dylib 还没被加载"
+echo ""
+echo "  生效后：执行 shell 工具时会自动出现实时面板"
+echo "  关闭方法：dpkg -r com.stell.ministool"
+echo "════════════════════════════════════════════"
+echo ""
+
+exit 0

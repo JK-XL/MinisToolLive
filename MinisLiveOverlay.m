@@ -53,8 +53,8 @@ static NSAttributedString *MTLRun(NSString *text, UIColor *fg, BOOL bold, UIFont
 static NSAttributedString *MTLParseLine(NSString *line, BOOL isStdErr, UIFont *font) {
     NSMutableAttributedString *out = [NSMutableAttributedString new];
     NSMutableString *plain = [NSMutableString new];
-    UIColor *fg = isStdErr ? [UIColor systemRedColor] : MTLDefaultFG();
-    UIColor *base = fg;
+    UIColor *base = isStdErr ? [UIColor systemRedColor] : MTLDefaultFG();
+    UIColor *fg = base;
     BOOL bold = NO;
 
     NSUInteger i = 0, n = line.length;
@@ -136,8 +136,10 @@ static NSAttributedString *MTLParseLine(NSString *line, BOOL isStdErr, UIFont *f
 
 #pragma mark - 浮层主体
 
-@interface MinisLiveOverlay () <UIScrollViewDelegate>
+// UITextViewDelegate 已继承 UIScrollViewDelegate，声明一个即可
+@interface MinisLiveOverlay () <UITextViewDelegate>
 
+// ── 状态 ─────────────────────────────────────────────
 @property (nonatomic, strong, nullable) UIWindow *window;
 @property (nonatomic, strong, nullable) UIView *panel;
 @property (nonatomic, strong, nullable) UIVisualEffectView *blur;
@@ -148,11 +150,10 @@ static NSAttributedString *MTLParseLine(NSString *line, BOOL isStdErr, UIFont *f
 @property (nonatomic, strong, nullable) UIButton *lockButton;
 
 @property (nonatomic, strong) NSMutableAttributedString *buffer;
-@property (nonatomic, strong) NSMutableArray<NSNumber *> *lineIsErr;  // 每行是否 stderr
-@property (nonatomic, strong) NSMutableArray<NSNumber *> *lineLens;   // 每行长度
+@property (nonatomic, strong) NSMutableArray<NSNumber *> *lineLens;
 @property (nonatomic, assign) NSUInteger lineCount;
 
-@property (nonatomic, assign) BOOL userPinnedTail;   // 是否跟随底部
+@property (nonatomic, assign) BOOL userPinnedTail;
 @property (nonatomic, assign) BOOL running;
 @property (nonatomic, assign) BOOL expanded;
 @property (nonatomic, assign) NSTimeInterval startedAt;
@@ -162,6 +163,30 @@ static NSAttributedString *MTLParseLine(NSString *line, BOOL isStdErr, UIFont *f
 @property (nonatomic, strong, nullable) NSTimer *elapsedTimer;
 @property (nonatomic, strong, nullable) NSTimer *fadeTimer;
 @property (nonatomic, assign) BOOL pendingFlush;
+
+// ── 内部方法（必须在此声明，ObjC 要先声明后使用）────
+- (void)ensureWindow;
+- (void)buildPanelIfNeeded;
+- (void)applyPanelFrame;
+- (void)resetBuffer;
+- (void)trimIfNeeded;
+- (NSAttributedString *)newlineAttr;
+- (void)flushNow;
+- (void)scrollToBottom;
+- (void)setStatusDotColor:(UIColor *)color;
+- (void)refreshChrome;
+- (void)refreshLockButton;
+- (UIFont *)monospacedFont;
+- (void)showPanelAnimated:(BOOL)animated;
+- (void)hidePanelAnimated:(BOOL)animated;
+- (void)startTimers;
+- (void)stopFlushTimer;
+- (void)stopElapsedTimer;
+- (void)stopTimers;
+- (void)handlePan:(UIPanGestureRecognizer *)g;
+- (void)handleDoubleTap:(UITapGestureRecognizer *)g;
+- (void)toggleLock;
+- (void)hideTapped;
 
 @end
 
@@ -186,8 +211,7 @@ static NSAttributedString *MTLParseLine(NSString *line, BOOL isStdErr, UIFont *f
 - (instancetype)init {
     if ((self = [super init])) {
         _buffer   = [NSMutableAttributedString new];
-        _lineIsErr = [NSMutableArray new];
-        _lineLens  = [NSMutableArray new];
+        _lineLens = [NSMutableArray new];
         _userPinnedTail = YES;
     }
     return self;
@@ -198,12 +222,11 @@ static NSAttributedString *MTLParseLine(NSString *line, BOOL isStdErr, UIFont *f
 - (void)beginCommand:(NSString *)executable arguments:(NSArray<NSString *> *)arguments {
     if (![MinisLiveOverlay isEnabled]) return;
 
-    // 组装可读标题：优先 basename，参数拼接后截断
     NSString *base = executable.lastPathComponent ?: (executable ?: @"command");
-    NSMutableArray *args = [NSMutableArray array];
+    NSMutableArray<NSString *> *args = [NSMutableArray array];
     for (NSString *a in arguments ?: @[]) {
         if ([a isEqualToString:@"-c"]) continue;         // /bin/sh -c 噪音
-        [args addObject:a.length > 60 ? [a substringToIndex:60] : a];
+        [args addObject:(a.length > 60 ? [a substringToIndex:60] : a)];
     }
     NSString *shown = [args componentsJoinedByString:@" "];
     if (shown.length > 160) shown = [[shown substringToIndex:160] stringByAppendingString:@"…"];
@@ -226,17 +249,13 @@ static NSAttributedString *MTLParseLine(NSString *line, BOOL isStdErr, UIFont *f
     NSAttributedString *rich = MTLParseLine(line, isStdErr, [self monospacedFont]);
     [self.buffer appendAttributedString:rich];
     [self.buffer appendAttributedString:[self newlineAttr]];
-
-    [self.lineIsErr addObject:@(isStdErr)];
-    [self.lineLens  addObject:@(rich.length + 1)];
+    [self.lineLens addObject:@(rich.length + 1)];
     self.lineCount++;
 
     [self trimIfNeeded];
     self.pendingFlush = YES;
 
-    if (!self.flushTimer) {
-        [self flushNow];
-    }
+    if (!self.flushTimer) [self flushNow];
 }
 
 - (void)endCommandExitCode:(NSInteger)exitCode duration:(NSTimeInterval)duration {
@@ -250,17 +269,17 @@ static NSAttributedString *MTLParseLine(NSString *line, BOOL isStdErr, UIFont *f
                            ok ? @"✓" : @"✗", (long)exitCode, duration];
     [self stopElapsedTimer];
     [self setStatusDotColor:ok ? [UIColor systemGreenColor] : [UIColor systemRedColor]];
-    [self refreshChrome];
 
-    // 锁定时常显；否则延迟淡出
     NSNumber *lock = [[NSUserDefaults standardUserDefaults] objectForKey:kMTLLockKey];
-    if (lock.boolValue) return;
+    if (lock.boolValue) return;                          // 锁定常显
 
     [self.fadeTimer invalidate];
+    __weak typeof(self) weakSelf = self;
     self.fadeTimer = [NSTimer scheduledTimerWithTimeInterval:kMTLFadeOut
                                                      repeats:NO
                                                        block:^(NSTimer *t) {
-        if (!self.running) [self hidePanelAnimated:YES];
+        __strong typeof(weakSelf) s = weakSelf;
+        if (s && !s.running) [s hidePanelAnimated:YES];
     }];
 }
 
@@ -273,11 +292,10 @@ static NSAttributedString *MTLParseLine(NSString *line, BOOL isStdErr, UIFont *f
 #pragma mark - 缓冲管理
 
 - (void)resetBuffer {
-    [self.buffer setString:@""];
-    [self.lineIsErr removeAllObjects];
+    self.buffer = [NSMutableAttributedString new];       // ← 换新对象（不是 setString:）
     [self.lineLens removeAllObjects];
     self.lineCount = 0;
-    self.textView.attributedText = self.buffer;
+    self.textView.attributedText = [self.buffer copy];
     self.userPinnedTail = YES;
 }
 
@@ -293,12 +311,11 @@ static NSAttributedString *MTLParseLine(NSString *line, BOOL isStdErr, UIFont *f
     for (NSUInteger i = 0; i < drop && i < self.lineLens.count; i++) {
         chars += self.lineLens[i].unsignedIntegerValue;
     }
-    if (chars <= self.buffer.length) {
+    if (chars > 0 && chars <= self.buffer.length) {
         [self.buffer deleteCharactersInRange:NSMakeRange(0, chars)];
     }
     NSUInteger n = MIN(drop, self.lineLens.count);
-    [self.lineLens  removeObjectsInRange:NSMakeRange(0, n)];
-    [self.lineIsErr removeObjectsInRange:NSMakeRange(0, n)];
+    [self.lineLens removeObjectsInRange:NSMakeRange(0, n)];
     self.lineCount -= n;
 }
 
@@ -307,14 +324,13 @@ static NSAttributedString *MTLParseLine(NSString *line, BOOL isStdErr, UIFont *f
 - (void)flushNow {
     if (!self.pendingFlush) return;
     self.pendingFlush = NO;
-    self.textView.attributedText = self.buffer;
+    self.textView.attributedText = [self.buffer copy];
     if (self.userPinnedTail) [self scrollToBottom];
 }
 
 - (void)scrollToBottom {
     if (self.buffer.length == 0) return;
-    NSRange end = NSMakeRange(self.buffer.length - 1, 1);
-    [self.textView scrollRangeToVisible:end];
+    [self.textView scrollRangeToVisible:NSMakeRange(self.buffer.length - 1, 1)];
 }
 
 - (void)setStatusDotColor:(UIColor *)color {
@@ -337,9 +353,6 @@ static NSAttributedString *MTLParseLine(NSString *line, BOOL isStdErr, UIFont *f
 
 #pragma mark - 面板构建与显示
 
-@interface MinisLiveOverlay (UI)
-@end
-
 @implementation MinisLiveOverlay (UI)
 
 - (void)ensureWindow {
@@ -355,7 +368,6 @@ static NSAttributedString *MTLParseLine(NSString *line, BOOL isStdErr, UIFont *f
 
     [self buildPanelIfNeeded];
     vc.panel = self.panel;
-    ((MTLPassthroughView *)vc.view).panel = self.panel;
 }
 
 - (void)buildPanelIfNeeded {
@@ -382,7 +394,7 @@ static NSAttributedString *MTLParseLine(NSString *line, BOOL isStdErr, UIFont *f
     [panel addSubview:blur];
     self.blur = blur;
 
-    // ── 顶栏：状态点 + 标题 + 耗时 ─────────────────────────
+    // ── 顶栏要素 ──────────────────────────────────────────
     UIView *dot = [UIView new];
     dot.translatesAutoresizingMaskIntoConstraints = NO;
     dot.backgroundColor = [UIColor systemBlueColor];
@@ -395,6 +407,7 @@ static NSAttributedString *MTLParseLine(NSString *line, BOOL isStdErr, UIFont *f
     title.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
     title.textColor = UIColor.labelColor;
     title.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    title.userInteractionEnabled = YES;
     [panel addSubview:title];
     self.titleLabel = title;
 
@@ -429,7 +442,7 @@ static NSAttributedString *MTLParseLine(NSString *line, BOOL isStdErr, UIFont *f
     tv.textContainerInset = UIEdgeInsetsMake(6, 8, 6, 8);
     tv.textContainer.lineFragmentPadding = 0;
     tv.showsVerticalScrollIndicator = YES;
-    tv.delegate = self;
+    tv.delegate = self;                              // 扩展已声明 UITextViewDelegate
     [panel addSubview:tv];
     self.textView = tv;
 
@@ -441,22 +454,23 @@ static NSAttributedString *MTLParseLine(NSString *line, BOOL isStdErr, UIFont *f
         [blur.trailingAnchor constraintEqualToAnchor:panel.trailingAnchor],
 
         [dot.leadingAnchor    constraintEqualToAnchor:panel.leadingAnchor constant:12],
-        [dot.topAnchor        constraintEqualToAnchor:panel.topAnchor constant:11],
+        [dot.topAnchor        constraintEqualToAnchor:panel.topAnchor constant:13],
         [dot.widthAnchor      constraintEqualToConstant:8],
         [dot.heightAnchor     constraintEqualToConstant:8],
 
         [title.leadingAnchor  constraintEqualToAnchor:dot.trailingAnchor constant:8],
-        [title.topAnchor      constraintEqualToAnchor:panel.topAnchor constant:7],
-        [meta.leadingAnchor   constraintEqualToAnchor:title.trailingAnchor constant:8],
+        [title.topAnchor      constraintEqualToAnchor:panel.topAnchor constant:9],
+
+        [meta.leadingAnchor   constraintGreaterThanOrEqualToAnchor:title.trailingAnchor constant:8],
         [meta.trailingAnchor  constraintLessThanOrEqualToAnchor:lock.leadingAnchor constant:-6],
         [meta.centerYAnchor   constraintEqualToAnchor:title.centerYAnchor],
 
-        [lock.trailingAnchor  constraintEqualToAnchor:close.leadingAnchor constant:-6],
+        [lock.trailingAnchor  constraintEqualToAnchor:close.leadingAnchor constant:-4],
         [lock.centerYAnchor   constraintEqualToAnchor:title.centerYAnchor],
         [lock.widthAnchor     constraintEqualToConstant:26],
         [lock.heightAnchor    constraintEqualToConstant:26],
 
-        [close.trailingAnchor constraintEqualToAnchor:panel.trailingAnchor constant:-12],
+        [close.trailingAnchor constraintEqualToAnchor:panel.trailingAnchor constant:-10],
         [close.centerYAnchor  constraintEqualToAnchor:title.centerYAnchor],
         [close.widthAnchor    constraintEqualToConstant:26],
         [close.heightAnchor   constraintEqualToConstant:26],
@@ -467,18 +481,17 @@ static NSAttributedString *MTLParseLine(NSString *line, BOOL isStdErr, UIFont *f
         [tv.bottomAnchor      constraintEqualToAnchor:panel.bottomAnchor constant:-6],
     ]];
 
-    // ── 手势：拖动 + 双击放大 ─────────────────────────────
+    // ── 手势 ─────────────────────────────────────────────
     UIPanGestureRecognizer *pan =
         [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
     [title addGestureRecognizer:pan];
-    title.userInteractionEnabled = YES;
 
     UITapGestureRecognizer *dbl =
         [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleDoubleTap:)];
     dbl.numberOfTapsRequired = 2;
     [title addGestureRecognizer:dbl];
 
-    // 标题条视觉：细分隔线
+    // 顶栏细分隔线
     UIView *sep = [UIView new];
     sep.translatesAutoresizingMaskIntoConstraints = NO;
     sep.backgroundColor = [UIColor.separatorColor colorWithAlphaComponent:0.5];
@@ -515,11 +528,11 @@ static NSAttributedString *MTLParseLine(NSString *line, BOOL isStdErr, UIFont *f
 
     if (g.state == UIGestureRecognizerStateEnded) {
         CGSize scr = UIScreen.mainScreen.bounds.size;
-        CGRect clamped = self.panel.frame;
-        clamped.origin.x = MAX(4, MIN(clamped.origin.x, scr.width - clamped.size.width - 4));
-        clamped.origin.y = MAX(40, MIN(clamped.origin.y, scr.height - clamped.size.height - 20));
-        self.panel.frame = clamped;
-        [[NSUserDefaults standardUserDefaults] setDouble:clamped.origin.y forKey:kMTLFrameKey];
+        CGRect c = self.panel.frame;
+        c.origin.x = MAX(4, MIN(c.origin.x, scr.width - c.size.width - 4));
+        c.origin.y = MAX(40, MIN(c.origin.y, scr.height - c.size.height - 20));
+        self.panel.frame = c;
+        [[NSUserDefaults standardUserDefaults] setDouble:c.origin.y forKey:kMTLFrameKey];
     }
 }
 
@@ -538,7 +551,7 @@ static NSAttributedString *MTLParseLine(NSString *line, BOOL isStdErr, UIFont *f
     BOOL now = ![[NSUserDefaults standardUserDefaults] boolForKey:kMTLLockKey];
     [[NSUserDefaults standardUserDefaults] setBool:now forKey:kMTLLockKey];
     [self refreshLockButton];
-    if (now) [self.fadeTimer invalidate];
+    if (now) { [self.fadeTimer invalidate]; self.fadeTimer = nil; }
 }
 
 - (void)refreshLockButton {
@@ -590,31 +603,27 @@ static NSAttributedString *MTLParseLine(NSString *line, BOOL isStdErr, UIFont *f
 
 - (void)startTimers {
     [self stopTimers];
-
     __weak typeof(self) weakSelf = self;
+
     self.flushTimer = [NSTimer scheduledTimerWithTimeInterval:kMTLFlushGap
                                                      repeats:YES
                                                        block:^(NSTimer *t) {
-        [weakSelf flushNow];
+        __strong typeof(weakSelf) s = weakSelf;
+        [s flushNow];
     }];
 
     self.elapsedTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
                                                        repeats:YES
                                                          block:^(NSTimer *t) {
-        __strong typeof(weakSelf) self = weakSelf;
-        if (!self.running) return;
-        NSTimeInterval el = [NSDate timeIntervalSinceReferenceDate] - self.startedAt;
-        self.metaLabel.text = [NSString stringWithFormat:@"执行中 · %.0fs", el];
+        __strong typeof(weakSelf) s = weakSelf;
+        if (!s.running) return;
+        NSTimeInterval el = [NSDate timeIntervalSinceReferenceDate] - s.startedAt;
+        s.metaLabel.text = [NSString stringWithFormat:@"执行中 · %.0fs", el];
     }];
 }
 
-- (void)stopFlushTimer {
-    [self.flushTimer invalidate]; self.flushTimer = nil;
-}
-
-- (void)stopElapsedTimer {
-    [self.elapsedTimer invalidate]; self.elapsedTimer = nil;
-}
+- (void)stopFlushTimer   { [self.flushTimer invalidate];   self.flushTimer = nil; }
+- (void)stopElapsedTimer { [self.elapsedTimer invalidate]; self.elapsedTimer = nil; }
 
 - (void)stopTimers {
     [self stopFlushTimer];
