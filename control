@@ -1,0 +1,10 @@
+Package: com.stell.ministool
+Name: Minis Tool Live
+Version: 0.1.0
+Architecture: iphoneos-arm64
+Description: Minis 实时工具输出浮层 —— 在执行 shell 工具时并列显示逐行实时输出（毛玻璃、ANSI 彩色、stderr 标红），原生卡片保持原样。
+Maintainer: Stell
+Author: Stell
+Section: Tweaks
+Depends: mobilesubstrate, firmware (>= 15.0)
+Tag: purpose::extension, role::enduser

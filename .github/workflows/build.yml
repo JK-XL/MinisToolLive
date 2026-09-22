@@ -1,0 +1,63 @@
+name: Build MinisToolLive
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version || true
+          sw_vers
+
+      - name: Install Theos
+        run: |
+          set -e
+          export THEOS=$HOME/theos
+          git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
+          # Theos 在 macOS 上直接用 Xcode 自带工具链，无需额外下载
+          ls "$THEOS/bin" | head -20
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+          echo "$THEOS/bin"   >> "$GITHUB_PATH"
+
+      - name: Lint plist and control
+        run: |
+          set -e
+          plutil -lint MinisToolLive.plist
+          echo "--- control ---"
+          cat control
+
+      - name: Build package
+        run: |
+          set -e
+          make clean 2>/dev/null || true
+          make package FINALPACKAGE=1 DEBUG=0 THEOS_PACKAGE_SCHEME=rootless
+          echo "=== packages ==="
+          ls -la packages/ || true
+
+      - name: Verify deb
+        run: |
+          set -e
+          DEB=$(ls packages/*.deb | head -1)
+          echo "DEB=$DEB"
+          echo "=== control ==="
+          dpkg-deb -I "$DEB"
+          echo "=== contents ==="
+          dpkg-deb -c "$DEB"
+          echo "=== arch check ==="
+          dpkg-deb -f "$DEB" Architecture
+          echo "=== sha256 ==="
+          shasum -a 256 "$DEB"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MinisToolLive-deb
+          path: packages/*.deb
+          if-no-files-found: error
