@@ -26,6 +26,16 @@ jobs:
           echo "THEOS=$THEOS" >> "$GITHUB_ENV"
           echo "$THEOS/bin"   >> "$GITHUB_PATH"
 
+      - name: Install ldid (Theos 签名必需)
+        run: |
+          set -e
+          brew install ldid || true
+          if ! command -v ldid >/dev/null 2>&1; then
+            echo "::warning::brew ldid 不可用，尝试 Theos 自带 toolchain"
+            find "$THEOS" -name 'ldid*' -type f 2>/dev/null | head -5 || true
+          fi
+          command -v ldid && ldid -v 2>&1 | head -2 || echo "ldid 仍缺失"
+
       - name: Lint plist and control
         run: |
           set -e
