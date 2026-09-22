@@ -56,14 +56,22 @@ jobs:
           set -e
           DEB=$(ls packages/*.deb | head -1)
           echo "DEB=$DEB"
+          echo "=== ar 结构 ==="
+          ar t "$DEB" || true
           echo "=== control ==="
-          dpkg-deb -I "$DEB"
-          echo "=== contents ==="
-          dpkg-deb -c "$DEB"
-          echo "=== arch check ==="
-          dpkg-deb -f "$DEB" Architecture
+          mkdir -p /tmp/x && cd /tmp/x && rm -rf ./* 
+          ar x "$OLDPWD/$DEB" control.tar.gz data.tar.gz 2>/dev/null || \
+            ar x "$OLDPWD/$DEB" 2>/dev/null || true
+          ls -la
+          for f in control.tar.gz control.tar.xz control.tar.zst; do
+            [ -f "$f" ] && echo "--- $f ---" && tar -xf "$f" -O ./control 2>/dev/null | head -20
+          done
+          echo "=== data 内容 ==="
+          for f in data.tar.gz data.tar.xz data.tar.zst; do
+            [ -f "$f" ] && echo "--- $f ---" && tar -tf "$f" | head -20
+          done
           echo "=== sha256 ==="
-          shasum -a 256 "$DEB"
+          shasum -a 256 "$OLDPWD/$DEB"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
