@@ -349,11 +349,7 @@ static NSAttributedString *MTLParseLine(NSString *line, BOOL isStdErr, UIFont *f
     return [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
 }
 
-@end
-
-#pragma mark - 面板构建与显示
-
-@implementation MinisLiveOverlay (UI)
+#pragma mark - 面板构建与显示（承接主实现）
 
 - (void)ensureWindow {
     if (self.window) return;
